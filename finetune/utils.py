@@ -4,12 +4,13 @@ import sys
 import json
 import math
 import time
-import unicodedata
+from functools import partial
+
 import numpy as np
 import tensorflow as tf
 from tensorflow.python.framework import function
 from tqdm import tqdm
-from functools import partial
+
 
 def encode_dataset(*splits, encoder):
     encoded_splits = []
@@ -22,9 +23,11 @@ def encode_dataset(*splits, encoder):
         encoded_splits.append(fields)
     return encoded_splits
 
+
 def stsb_label_encoding(labels, nclass=6):
     """
     Label encoding from Tree LSTM paper (Tai, Socher, Manning)
+    https://arxiv.org/abs/1503.00075
     """
     Y = np.zeros((len(labels), nclass)).astype(np.float32)
     for j, y in enumerate(labels):
@@ -35,6 +38,7 @@ def stsb_label_encoding(labels, nclass=6):
                 Y[j,i] = np.floor(y) - y + 1
     return Y
 
+
 def shape_list(x):
     """
     deal with dynamic shape in tensorflow cleanly
@@ -43,17 +47,20 @@ def shape_list(x):
     ts = tf.shape(x)
     return [ts[i] if ps[i] is None else ps[i] for i in range(len(ps))]
 
+
 def np_softmax(x, t=1):
     x = x/t
     x = x - np.max(x, axis=-1, keepdims=True)
     ex = np.exp(x)
     return ex/np.sum(ex, axis=-1, keepdims=True)
 
+
 def make_path(f):
     d = os.path.dirname(f)
     if d and not os.path.exists(d):
         os.makedirs(d)
     return f
+
 
 def _identity_init(shape, dtype, partition_info, scale):
     n = shape[-1]
@@ -62,14 +69,18 @@ def _identity_init(shape, dtype, partition_info, scale):
         w = w.reshape(shape)
     return w.astype(np.float32)
 
+
 def identity_init(scale=1.0):
     return partial(_identity_init, scale=scale)
+
 
 def _np_init(shape, dtype, partition_info, w):
     return w
 
+
 def np_init(w):
     return partial(_np_init, w=w)
+
 
 class ResultLogger(object):
     def __init__(self, path, *args, **kwargs):
@@ -87,14 +98,23 @@ class ResultLogger(object):
     def close(self):
         self.f_log.close()
 
-def find_trainable_variables(key):
-    return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, ".*{}.*".format(key))
+
+def find_trainable_variables(key, exclude=None):
+    trainable_variables = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, ".*{}.*".format(key))
+    if exclude is not None:
+        trainable_variables = [
+            var for var in trainable_variables
+            if exclude not in var.name
+        ]
+    return trainable_variables
 
 def flatten(outer):
     return [el for inner in outer for el in inner]
 
+
 def remove_none(l):
     return [e for e in l if e is not None]
+
 
 def iter_data(*datas, n_batch=128, truncate=False, verbose=False, max_batches=float("inf")):
     n = len(datas[0])
@@ -122,6 +142,7 @@ def get_ema_if_exists(v, gvs):
         ema_v = [v]
     return ema_v[0]
 
+
 def get_ema_vars(*vs):
     if tf.get_variable_scope().reuse:
         gvs = tf.global_variables()
@@ -130,6 +151,7 @@ def get_ema_vars(*vs):
         return vs[0]
     else:
         return vs
+
 
 @function.Defun(
     python_grad_func=lambda x, dy: tf.convert_to_tensor(dy),
@@ -140,6 +162,7 @@ def convert_gradient_to_tensor(x):
     """
     return x
 
+
 def assign_to_gpu(gpu=0, ps_dev="/device:CPU:0"):
     def _assign(op):
         node_def = op if isinstance(op, tf.NodeDef) else op.node_def
@@ -148,6 +171,7 @@ def assign_to_gpu(gpu=0, ps_dev="/device:CPU:0"):
         else:
             return "/gpu:%d" % gpu
     return _assign
+
 
 def average_grads(tower_grads):
     def average_dense(grad_and_vars):
