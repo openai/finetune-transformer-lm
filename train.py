@@ -17,7 +17,7 @@ from opt import adam, warmup_cosine, warmup_linear, warmup_constant
 from datasets import rocstories
 from analysis import rocstories as rocstories_analysis
 from text_utils import TextEncoder
-from utils import encode_dataset, flatten, iter_data, find_trainable_variables, get_ema_vars, convert_gradient_to_tensor, shape_list, ResultLogger, assign_to_gpu, average_grads, make_path
+from utils import encode_dataset, flatten, iter_data, find_trainable_variables, convert_gradient_to_tensor, shape_list, ResultLogger, assign_to_gpu, average_grads, make_path
 
 def gelu(x):
     return 0.5*x*(1+tf.tanh(math.sqrt(2/math.pi)*(x+0.044715*tf.pow(x, 3))))
@@ -54,7 +54,6 @@ def norm(x, scope, axis=[-1]):
         n_state = shape_list(x)[-1]
         g = tf.get_variable("g", [n_state], initializer=tf.constant_initializer(1))
         b = tf.get_variable("b", [n_state], initializer=tf.constant_initializer(0))
-        g, b = get_ema_vars(g, b)
         return _norm(x, g, b, axis=axis)
 
 def dropout(x, pdrop, train):

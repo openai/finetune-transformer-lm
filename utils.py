@@ -114,23 +114,6 @@ def iter_data(*datas, n_batch=128, truncate=False, verbose=False, max_batches=fl
             yield (d[i:i+n_batch] for d in datas)
         n_batches += 1
 
-def get_ema_if_exists(v, gvs):
-    name = v.name.split(':')[0]
-    ema_name = name+'/ExponentialMovingAverage:0'
-    ema_v = [v for v in gvs if v.name == ema_name]
-    if len(ema_v) == 0:
-        ema_v = [v]
-    return ema_v[0]
-
-def get_ema_vars(*vs):
-    if tf.get_variable_scope().reuse:
-        gvs = tf.global_variables()
-        vs = [get_ema_if_exists(v, gvs) for v in vs]
-    if len(vs) == 1:
-        return vs[0]
-    else:
-        return vs
-
 @function.Defun(
     python_grad_func=lambda x, dy: tf.convert_to_tensor(dy),
     shape_func=lambda op: [op.inputs[0].get_shape()])
