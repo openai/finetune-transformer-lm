@@ -1,3 +1,5 @@
+**Status:** Archive (code is provided as-is, no updates expected)
+
 # finetune-transformer-lm
 Code and model for the paper "Improving Language Understanding by Generative Pre-Training"
 
