@@ -5,6 +5,8 @@ import json
 import joblib
 import random
 import argparse
+from itertools import islice
+
 import numpy as np
 import tensorflow as tf
 
@@ -14,8 +16,9 @@ from sklearn.utils import shuffle
 from sklearn.metrics import accuracy_score
 
 from opt import adam, warmup_cosine, warmup_linear, warmup_constant
-from datasets import rocstories
+from datasets import rocstories, racem, race, NUM2CHOI
 from analysis import rocstories as rocstories_analysis
+from analysis import race as race_analysis
 from text_utils import TextEncoder
 from utils import encode_dataset, flatten, iter_data, find_trainable_variables, convert_gradient_to_tensor, shape_list, ResultLogger, assign_to_gpu, average_grads, make_path
 
@@ -181,14 +184,14 @@ def model(X, M, Y, train=False, reuse=False):
         pool_idx = tf.cast(tf.argmax(tf.cast(tf.equal(X[:, :, 0], clf_token), tf.float32), 1), tf.int32)
         clf_h = tf.gather(clf_h, tf.range(shape_list(X)[0], dtype=tf.int32)*n_ctx+pool_idx)
 
-        clf_h = tf.reshape(clf_h, [-1, 2, n_embd])
+        clf_h = tf.reshape(clf_h, [-1, cn, n_embd])
         if train and clf_pdrop > 0:
             shape = shape_list(clf_h)
             shape[1] = 1
             clf_h = tf.nn.dropout(clf_h, 1-clf_pdrop, shape)
         clf_h = tf.reshape(clf_h, [-1, n_embd])
         clf_logits = clf(clf_h, 1, train=train)
-        clf_logits = tf.reshape(clf_logits, [-1, 2])
+        clf_logits = tf.reshape(clf_logits, [-1, cn])
 
         clf_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=clf_logits, labels=Y)
         return clf_logits, clf_losses, lm_losses
@@ -225,6 +228,34 @@ def mgpu_predict(*xs):
             gpu_ops.append([clf_logits, clf_losses, lm_losses])
     ops = [tf.concat(op, 0) for op in zip(*gpu_ops)]
     return ops
+
+
+def transform_race(art, ques, c1, c2, c3, c4):
+    n_batch = len(art)
+    xmb = np.zeros((n_batch, 4, n_ctx, 2), dtype=np.int32)
+    mmb = np.zeros((n_batch, 4, n_ctx), dtype=np.float32)
+    start = encoder['_start_']
+    delimiter = encoder['_delimiter_']
+    for i, (x1, q, x2, x3, x4, x5), in enumerate(zip(art, ques, c1, c2, c3, c4)):
+        x12 = [start]+x1[:469]+q[:23]+[delimiter]+x2[:17]+[clf_token]
+        x13 = [start]+x1[:469]+q[:23]+[delimiter]+x3[:17]+[clf_token]
+        x14 = [start]+x1[:469]+q[:23]+[delimiter]+x4[:17]+[clf_token]
+        x15 = [start]+x1[:469]+q[:23]+[delimiter]+x5[:17]+[clf_token]
+        l12 = len(x12)
+        l13 = len(x13)
+        l14 = len(x14)
+        l15 = len(x15)
+        xmb[i, 0, :l12, 0] = x12
+        xmb[i, 1, :l13, 0] = x13
+        xmb[i, 2, :l14, 0] = x14
+        xmb[i, 3, :l15, 0] = x15
+        mmb[i, 0, :l12] = 1
+        mmb[i, 1, :l13] = 1
+        mmb[i, 2, :l14] = 1
+        mmb[i, 3, :l15] = 1
+    xmb[:, :, :, 1] = np.arange(n_vocab+n_special, n_vocab+n_special+n_ctx)
+    return xmb, mmb
+
 
 def transform_roc(X1, X2, X3):
     n_batch = len(X1)
@@ -293,15 +324,53 @@ argmax = lambda x:np.argmax(x, 1)
 
 pred_fns = {
     'rocstories':argmax,
+    'racem':argmax,
+    'race':argmax,
 }
 
 filenames = {
     'rocstories':'ROCStories.tsv',
+    'racem':'RACE-M.tsv',
+    'race':'RACE.tsv',
 }
 
 label_decoders = {
     'rocstories':None,
+    'racem':NUM2CHOI,
+    'race':NUM2CHOI,
 }
+
+load_dataset = {
+    'rocstories': rocstories,
+    'racem':racem,
+    'race': race,
+}
+
+num_choice = {
+    'rocstories': 2,
+    'racem': 4,
+    'race': 4,
+}
+
+transforms = {
+    'rocstories': transform_roc,
+    'racem': transform_race,
+    'race': transform_race,
+}
+
+analyses = {
+    'rocstories': rocstories_analysis,
+    'racem': race_analysis,
+    'race': race_analysis,
+}
+
+
+def slice(a, n):
+    if n == -1:
+        return islice(a, len(a)-1)
+    else:
+        return islice(a, n)
+
 
 def predict():
     filename = filenames[dataset]
@@ -367,29 +436,46 @@ if __name__ == '__main__':
     encoder = text_encoder.encoder
     n_vocab = len(text_encoder.encoder)
 
-    (trX1, trX2, trX3, trY), (vaX1, vaX2, vaX3, vaY), (teX1, teX2, teX3) = encode_dataset(rocstories(data_dir), encoder=text_encoder)
-    n_y = 2
+    raw_dataset = load_dataset[dataset](data_dir)
+    transform = transforms[dataset]
+
+    trainset, devset, testset = encode_dataset(raw_dataset, encoder=text_encoder)
+
     encoder['_start_'] = len(encoder)
     encoder['_delimiter_'] = len(encoder)
     encoder['_classify_'] = len(encoder)
     clf_token = encoder['_classify_']
     n_special = 3
-    max_len = n_ctx//2-2
-    n_ctx = min(max([len(x1[:max_len])+max(len(x2[:max_len]), len(x3[:max_len])) for x1, x2, x3 in zip(trX1, trX2, trX3)]+[len(x1[:max_len])+max(len(x2[:max_len]), len(x3[:max_len])) for x1, x2, x3 in zip(vaX1, vaX2, vaX3)]+[len(x1[:max_len])+max(len(x2[:max_len]), len(x3[:max_len])) for x1, x2, x3 in zip(teX1, teX2, teX3)])+3, n_ctx)
-    trX, trM = transform_roc(trX1, trX2, trX3)
-    vaX, vaM = transform_roc(vaX1, vaX2, vaX3)
+
+
+    if dataset == "race" or dataset == "racem":
+        max_len = -1
+        n_ctx = 512
+    else:
+        max_len = n_ctx//2-2
+        n_ctx = min(max(min(len(x1), max_len) + max(map(lambda xi: min(len(xi), max_len), x)) for xset in (trainset, devset, testset) for x1, *x in zip(*slice(xset, -1)))+3, n_ctx)
+    print(n_ctx)
+
+    trX, trM = transform(*slice(trainset, -1))
+    vaX, vaM = transform(*slice(devset, -1))
+    trY = trainset[-1]
+    vaY = devset[-1]
+
     if submit:
-        teX, teM = transform_roc(teX1, teX2, teX3)
+        teX, teM = transform(*slice(testset, -1))
 
     n_train = len(trY)
     n_valid = len(vaY)
     n_batch_train = n_batch*n_gpu
     n_updates_total = (n_train//n_batch_train)*n_iter
 
-    X_train = tf.placeholder(tf.int32, [n_batch_train, 2, n_ctx, 2])
-    M_train = tf.placeholder(tf.float32, [n_batch_train, 2, n_ctx])
-    X = tf.placeholder(tf.int32, [None, 2, n_ctx, 2])
-    M = tf.placeholder(tf.float32, [None, 2, n_ctx])
+
+    cn = num_choice[dataset]
+
+    X_train = tf.placeholder(tf.int32, [n_batch_train, cn, n_ctx, 2])
+    M_train = tf.placeholder(tf.float32, [n_batch_train, cn, n_ctx])
+    X = tf.placeholder(tf.int32, [None, cn, n_ctx, 2])
+    M = tf.placeholder(tf.float32, [None, cn, n_ctx])
 
     Y_train = tf.placeholder(tf.int32, [n_batch_train])
     Y = tf.placeholder(tf.int32, [None])
@@ -440,4 +526,5 @@ if __name__ == '__main__':
         sess.run([p.assign(ip) for p, ip in zip(params, joblib.load(os.path.join(save_dir, desc, 'best_params.jl')))])
         predict()
         if analysis:
-            rocstories_analysis(data_dir, os.path.join(submission_dir, 'ROCStories.tsv'), os.path.join(log_dir, 'rocstories.jsonl'))
+            analyzer = analyses[dataset]
+            analyzer(data_dir, os.path.join(submission_dir, filenames[dataset]), os.path.join(log_dir, f'{desc}.jsonl'))
