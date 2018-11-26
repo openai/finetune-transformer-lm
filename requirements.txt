@@ -1,0 +1,11 @@
+# older versions of these dependencies may work
+# these are simply the newest versions at the time this file was made
+joblib>=0.12.5
+numpy>=1.15.4
+# change to just tensorflow if you don't have a GPU
+tensorflow-gpu>=1.11.0
+tqdm>=4.28.1
+scikit-learn>=0.19.2
+pandas>=0.23.4
+ftfy>=5.5.0
+spacy>=2.0.16
