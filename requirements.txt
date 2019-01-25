@@ -1,0 +1,11 @@
+ftfy==4.4.3; python_version < '3.0'
+ftfy>= 5.0.0; python_version >= '3.0'
+joblib
+numpy
+pandas
+sklearn
+spacy
+tensorflow
+tqdm
+joblib
+numpy
